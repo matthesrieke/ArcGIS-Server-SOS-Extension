@@ -15,14 +15,11 @@
  */
 package org.n52.sos.cache;
 
-import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collection;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Scanner;
+import java.util.Collections;
 
 import org.n52.oxf.valueDomains.time.ITimePeriod;
 import org.n52.sos.dataTypes.EnvelopeWrapper;
@@ -34,39 +31,27 @@ public class ObservationOfferingCache extends AbstractEntityCache<ObservationOff
 	private static final String TOKEN_SEP = "@@";
 	private static ObservationOfferingCache instance;
 
-	public static synchronized ObservationOfferingCache instance() throws FileNotFoundException {
+	public static synchronized ObservationOfferingCache instance(String dbName) throws FileNotFoundException {
 		if (instance == null) {
-			instance = new ObservationOfferingCache();
+			instance = new ObservationOfferingCache(dbName);
 		}
 		
 		return instance;
 	}
 	
-	private ObservationOfferingCache() throws FileNotFoundException {
-		super();
+	public static synchronized ObservationOfferingCache instance() throws FileNotFoundException {
+		return instance;
+	}
+
+	private boolean cancelled;
+	
+	private ObservationOfferingCache(String dbName) throws FileNotFoundException {
+		super(dbName);
 	}
 
 	@Override
 	protected String getCacheFileName() {
-		return "observationOfferings.cache";
-	}
-
-	@Override
-	protected Map<String, ObservationOffering> deserializeEntityCollection(
-			FileInputStream fis) {
-		Map<String, ObservationOffering> result = new HashMap<>();
-		Scanner sc = new Scanner(fis);
-		
-		String line;
-		while (sc.hasNext()) {
-			line = sc.nextLine();
-			String id = line.substring(0, line.indexOf("="));
-			result.put(id, deserializeEntity(line.substring(line.indexOf("="), line.length())));
-		}
-		
-		sc.close();
-		
-		return result;
+		return "observationOfferingsList.cache";
 	}
 
 	@Override
@@ -109,18 +94,50 @@ public class ObservationOfferingCache extends AbstractEntityCache<ObservationOff
 		
 		return new ObservationOffering(id, name, props, proc, env, time);
 	}
-
-	public void updateCache(AccessGDB geoDB) throws CacheException, IOException {
-		if (!instance.requestUpdateLock()) {
-			LOGGER.info("cache is currently already updating");
-			return;
-		}
-		
-		Collection<ObservationOffering> entities = geoDB.getOfferingAccess().getNetworksAsObservationOfferings();
-		instance.storeEntityCollection(entities);
-		
-		instance.freeUpdateLock();		
+	
+	@Override
+	protected boolean mergeWithPreviousEntries() {
+		return true;
 	}
 
+	protected Collection<ObservationOffering> getCollectionFromDAO(AccessGDB geoDB)
+			throws IOException {
+		this.cancelled = false;
+		clearTempCacheFile();
+		
+		geoDB.getOfferingAccess().getNetworksAsObservationOfferingsAsync(new OnOfferingRetrieved() {
+			
+			int count = 0;
+			
+			@Override
+			public void retrieveExpectedOfferingsCount(int c) {
+				setMaximumEntries(c);
+			}
+			
+			@Override
+			public void retrieveOffering(ObservationOffering oo, int currentOfferingIndex) throws RetrievingCancelledException {
+				storeTemporaryEntity(oo);
+				setLatestEntryIndex(currentOfferingIndex);
+				LOGGER.info(String.format("Added ObservationOffering #%s to the cache.", count++));
+				
+				if (cancelled) {
+					throw new RetrievingCancelledException("Cache update cancelled due to shutdown.");
+				}
+			}
+			
+		});
+		return Collections.emptyList();
+	}
+
+
+	@Override
+	protected AbstractEntityCache<ObservationOffering> getSingleInstance() {
+		return instance;
+	}
+
+	@Override
+	public void cancelCurrentExecution() {
+		this.cancelled = true;
+	}
 
 }

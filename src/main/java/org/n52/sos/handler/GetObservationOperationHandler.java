@@ -15,16 +15,15 @@
  */
 package org.n52.sos.handler;
 
-import java.io.File;
-import java.io.FileNotFoundException;
 import java.io.IOException;
-import java.net.URL;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
 import org.n52.om.observation.MultiValueObservation;
+import org.n52.ows.ExceptionReport;
 import org.n52.ows.InvalidParameterValueException;
+import org.n52.ows.NoApplicableCodeException;
 import org.n52.sos.Constants;
 import org.n52.sos.db.AccessGDB;
 import org.n52.sos.encoder.AQDObservationEncoder;
@@ -38,6 +37,9 @@ import com.esri.arcgis.server.json.JSONObject;
 public class GetObservationOperationHandler extends OGCOperationRequestHandler {
 	
 	private static final String GET_OBSERVATION_OPERATION_NAME = "GetObservation";
+	
+    public static final String OM_PHENOMENON_TIME_LATEST = "om:phenomenonTime,latest";
+	public static final String OM_PHENOMENON_TIME_FIRST = "om:phenomenonTime,first";
     
     private static final String VERSION_KEY = "version";
 	private static final String OFFERING_KEY = "offering";
@@ -64,7 +66,7 @@ public class GetObservationOperationHandler extends OGCOperationRequestHandler {
      * @throws Exception
      */
     public byte[] invokeOGCOperation(AccessGDB geoDB, JSONObject inputObject,
-            String[] responseProperties) throws Exception
+            String[] responseProperties) throws ExceptionReport
     {
         super.invokeOGCOperation(geoDB, inputObject, responseProperties);
         
@@ -104,31 +106,32 @@ public class GetObservationOperationHandler extends OGCOperationRequestHandler {
         if (inputObject.has(AGGREGATION_TYPE)) {
         	aggregationTypes = inputObject.getString(AGGREGATION_TYPE).split(",");
         }
-        else {
-        	aggregationTypes = new String[] {Constants.GETOBSERVATION_DEFAULT_AGGREGATIONTYPE};
-        }
-        
         
         String result;
            
-        Map<String, MultiValueObservation> observationCollection = geoDB.getObservationAccess().getObservations(offerings, featuresOfInterest, observedProperties, procedures, spatialFilter, temporalFilter, aggregationTypes, null);
+        Map<String, MultiValueObservation> observationCollection;
+		try {
+			observationCollection = geoDB.getObservationAccess().getObservations(offerings, featuresOfInterest, observedProperties, procedures, spatialFilter, temporalFilter, aggregationTypes, null);
         
-        if (responseFormat != null && responseFormat.equalsIgnoreCase(Constants.RESPONSE_FORMAT_RDF)) {
-//        	constructInvokedURL(offerings, featuresOfInterest, observedProperties, procedures, spatialFilter, temporalFilter, responseFormat);
-            throw new UnsupportedOperationException("RDF not yet supported");
-//            result = new RDFEncoder(sosUrlExtension).getObservationCollectionTriples(observationCollection, invokedURL);
-        }
-        else if (responseFormat != null && responseFormat.equalsIgnoreCase(Constants.RESPONSE_FORMAT_AQ)) {
-            result = new AQDObservationEncoder().encodeObservations(observationCollection);
-        }
-        else if (responseFormat == null || responseFormat.equalsIgnoreCase(Constants.RESPONSE_FORMAT_OM)) {
-            result = new OGCObservationSWECommonEncoder().encodeObservations(observationCollection);
-        }
-        else {
-            throw new InvalidParameterValueException("Specified responseFormat '" + responseFormat + "' is unsupported. Please use either '"+Constants.RESPONSE_FORMAT_OM+"', '"+Constants.RESPONSE_FORMAT_AQ+"', or '"+Constants.RESPONSE_FORMAT_RDF+"'.");
-        }
-        
-        return result.getBytes("utf-8");
+	        if (responseFormat != null && responseFormat.equalsIgnoreCase(Constants.RESPONSE_FORMAT_RDF)) {
+	//        	constructInvokedURL(offerings, featuresOfInterest, observedProperties, procedures, spatialFilter, temporalFilter, responseFormat);
+	            throw new UnsupportedOperationException("RDF not yet supported");
+	//            result = new RDFEncoder(sosUrlExtension).getObservationCollectionTriples(observationCollection, invokedURL);
+	        }
+	        else if (responseFormat != null && responseFormat.equalsIgnoreCase(Constants.RESPONSE_FORMAT_AQ)) {
+	            result = new AQDObservationEncoder().encodeObservations(observationCollection);
+	        }
+	        else if (responseFormat == null || responseFormat.equalsIgnoreCase(Constants.RESPONSE_FORMAT_OM)) {
+	            result = new OGCObservationSWECommonEncoder().encodeObservations(observationCollection);
+	        }
+	        else {
+	            throw new InvalidParameterValueException("Specified responseFormat '" + responseFormat + "' is unsupported. Please use either '"+Constants.RESPONSE_FORMAT_OM+"', '"+Constants.RESPONSE_FORMAT_AQ+"', or '"+Constants.RESPONSE_FORMAT_RDF+"'.");
+	        }
+	        
+	        return result.getBytes("utf-8");
+		} catch (IOException e) {
+			throw new NoApplicableCodeException(e);
+		}
     }
 
 
@@ -137,6 +140,11 @@ public class GetObservationOperationHandler extends OGCOperationRequestHandler {
 		String temporalFilter = null;
         if (inputObject.has(TEMPORAL_FILTER_KEY)) {
             String temporalFilterOGC = inputObject.getString(TEMPORAL_FILTER_KEY);
+            
+            if (temporalFilterOGC.equals(OM_PHENOMENON_TIME_FIRST) ||
+            		temporalFilterOGC.equals(OM_PHENOMENON_TIME_LATEST)) {
+            	return temporalFilterOGC;
+            }
             
         	String[] params = temporalFilterOGC.split(",");
         	if (params.length != 2) {
@@ -156,10 +164,11 @@ public class GetObservationOperationHandler extends OGCOperationRequestHandler {
 		return temporalFilter;
 	}
 
-    private String constructInvokedURL(String[] offerings,
+    protected String constructInvokedURL(String[] offerings,
 			String[] featuresOfInterest, String[] observedProperties,
 			String[] procedures, String spatialFilter, String temporalFilter, String responseFormat) {
-        StringBuilder invokedURL = new StringBuilder(this.sosUrlExtension);
+        StringBuilder invokedURL = new StringBuilder();
+        invokedURL.append(this.sosUrlExtension);
         invokedURL.append("/GetObservation");
         invokedURL.append("?service=").append(SERVICE);
         invokedURL.append("&request=").append(getOperationName());
@@ -193,7 +202,8 @@ public class GetObservationOperationHandler extends OGCOperationRequestHandler {
 	}
 
 	private String createCommaSeperatedList(String[] offerings) {
-		StringBuilder sb = new StringBuilder(offerings[0]);
+		StringBuilder sb = new StringBuilder();
+		sb.append(offerings[0]);
 		
 		if (offerings.length == 1) return sb.toString();
 		

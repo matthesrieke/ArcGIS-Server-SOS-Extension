@@ -23,11 +23,11 @@ import org.n52.util.logging.Logger;
 
 import com.esri.arcgis.carto.IMapServer3;
 import com.esri.arcgis.carto.IMapServerDataAccess;
+import com.esri.arcgis.datasourcesGDB.SqlWorkspace;
 import com.esri.arcgis.geodatabase.FeatureClass;
 import com.esri.arcgis.geodatabase.ICursor;
 import com.esri.arcgis.geodatabase.IDataset;
 import com.esri.arcgis.geodatabase.IEnumDataset;
-import com.esri.arcgis.geodatabase.IQueryDef;
 import com.esri.arcgis.geodatabase.IRow;
 import com.esri.arcgis.geodatabase.Workspace;
 import com.esri.arcgis.geodatabase.esriDatasetType;
@@ -41,9 +41,11 @@ public class AccessGdbForAnalysisImpl implements AccessGdbForAnalysis {
 
     static Logger LOGGER = Logger.getLogger(AccessGdbForAnalysisImpl.class.getName());
 
-    private Workspace workspace;
-    
+
     private DBInspector soe;
+
+
+	private WorkspaceWrapper workspace;
 
     public AccessGdbForAnalysisImpl(DBInspector soe) throws AutomationException, IOException {
         LOGGER.debug("Creating AccessGdbForAnalysisImpl.");
@@ -56,7 +58,18 @@ public class AccessGdbForAnalysisImpl implements AccessGdbForAnalysis {
         IMapServerDataAccess mapServerDataAccess = soe.getMapServerDataAccess();
         Object dataSource= mapServerDataAccess.getDataSource(mapName, 0);
         FeatureClass fc = new FeatureClass(dataSource);
-        this.workspace = new Workspace(fc.getWorkspace());
+        Workspace workspace = new Workspace(fc.getWorkspace());
+        
+        this.workspace = new WorkspaceWrapper();
+        
+        if (fc.getWorkspace() instanceof SqlWorkspace) {
+        	this.workspace.setSqlWorkspace((SqlWorkspace) fc.getWorkspace());
+        	this.workspace.setWorkspace(workspace);
+        }
+        else {
+        	this.workspace.setWorkspace(workspace);
+        }
+        
     }
     
     public JSONObject analyzeTable (JSONObject inputObject) throws AutomationException, IOException {
@@ -85,11 +98,9 @@ public class AccessGdbForAnalysisImpl implements AccessGdbForAnalysis {
         
         JSONObject json = new JSONObject();
 
-        IQueryDef queryDef = this.workspace.createQueryDef();
         try {
-            queryDef.setTables(tableName);
-            queryDef.setSubFields("COUNT(" + primaryKeyColumn + ")");
-            ICursor cursor = queryDef.evaluate();
+            ICursor cursor = DatabaseUtils.evaluateQuery(tableName, "", "COUNT(" + primaryKeyColumn + ")",
+            		workspace);
             
             json.append("Reading count of table:", tableName);
             IRow row;
@@ -118,11 +129,8 @@ public class AccessGdbForAnalysisImpl implements AccessGdbForAnalysis {
         json.append("This function: ", "...checks the availability of a table as specified in the properties of this SOE (configure in ArcGIS Server Manager).");
         json.append("This function: ", "...and presents the count of rows contained in that table.");
         
-        IQueryDef queryDef = this.workspace.createQueryDef();
         try {
-            queryDef.setTables(soe.getTable());
-            queryDef.setSubFields("COUNT(" + soe.getTablePkField() + ")");
-            ICursor cursor = queryDef.evaluate();
+            ICursor cursor = DatabaseUtils.evaluateQuery(soe.getTable(), "", "COUNT(" + soe.getTablePkField() + ")", workspace);
             
             json.append("Reading count of table:", soe.getTable());
             IRow row;
@@ -148,7 +156,7 @@ public class AccessGdbForAnalysisImpl implements AccessGdbForAnalysis {
             JSONObject json = new JSONObject();
             json.append("This function: ", "...reads directly the table names from the DB through ArcGIS Server. This gives you a picture of how the SOE sees your DB.");
             
-            IEnumDataset datasets = this.workspace.getDatasets(esriDatasetType.esriDTAny);
+            IEnumDataset datasets = this.workspace.getWorkspace().getDatasets(esriDatasetType.esriDTAny);
             IDataset dataset = datasets.next();
             
             while (dataset != null) {

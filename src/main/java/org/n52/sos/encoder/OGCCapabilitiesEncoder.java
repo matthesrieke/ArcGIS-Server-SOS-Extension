@@ -72,7 +72,8 @@ public class OGCCapabilitiesEncoder extends AbstractEncoder {
         
         // replace variables in Capabilities document template:
         
-        StringBuilder templateCapabilites = new StringBuilder(template);
+    	StringBuilder templateCapabilites = new StringBuilder();
+    	templateCapabilites.append(template);
         
         replace(templateCapabilites, SERVICE_TITLE, sd.getTitle());        
         replace(templateCapabilites, SERVICE_DESCRIPTION, sd.getDescription());
@@ -100,10 +101,12 @@ public class OGCCapabilitiesEncoder extends AbstractEncoder {
         // replace variables in ObservationOffering template and add to Capabilities document:
         
         StringBuilder allOfferings = new StringBuilder();
-        StringBuilder templateOffering = new StringBuilder(offeringTemplate);
+        StringBuilder templateOffering = new StringBuilder();
+        templateOffering.append(offeringTemplate);
         
         for (ObservationOffering obsOff : obsOfferings){
-            StringBuilder offeringString = new StringBuilder(templateOffering);
+            StringBuilder offeringString = new StringBuilder();
+            offeringString.append(templateOffering);
             
             replace(offeringString, OFFERING_IDENTIFIER, obsOff.getName());
             replace(offeringString, OFFERING_PROCEDURE, obsOff.getProcedureIdentifier()); // TODO replace with URL to procedure; e.g. DescribeSensor request to this procedure
@@ -123,7 +126,7 @@ public class OGCCapabilitiesEncoder extends AbstractEncoder {
                 double upperY = obsOff.getObservedArea().getUpperRight().getY();
             
                 String observedArea = "<sos:observedArea>" +
-                		"<gml:Envelope srsName=\"http://www.opengis.net/def/crs/EPSG/0/4326\">" +
+                		"<gml:Envelope srsName=\"urn:ogc:def:crs:EPSG::3857\">" +
                 		"<gml:lowerCorner>" + lowerY + " " + lowerX + "</gml:lowerCorner>" +
                 		"<gml:upperCorner>" + upperY + " " + upperX + "</gml:upperCorner>" +
                 		"</gml:Envelope>" +

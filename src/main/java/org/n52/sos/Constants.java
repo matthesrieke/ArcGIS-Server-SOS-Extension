@@ -33,4 +33,8 @@ public class Constants {
     public static final String RESPONSE_FORMAT_SENSORML_20   = "http://www.opengis.net/sensorML/2.0";
 
 	public static final String GETOBSERVATION_DEFAULT_AGGREGATIONTYPE = "http://dd.eionet.europa.eu/vocabulary/aq/averagingperiod/1h";
+	public static final String GETOBSERVATION_DEFAULT_AGGREGATIONTYPE_ALT = "http://dd.eionet.europa.eu/vocabulary/aq/primaryObservation/hour";
+	
+	public static final String GETOBSERVATION_DEFAULT_AGGREGATIONTYPE_SECOND = "http://dd.eionet.europa.eu/vocabulary/aq/averagingperiod/1d";
+	public static final String GETOBSERVATION_DEFAULT_AGGREGATIONTYPE_SECOND_ALT = "http://dd.eionet.europa.eu/vocabulary/aq/primaryObservation/day";
 }

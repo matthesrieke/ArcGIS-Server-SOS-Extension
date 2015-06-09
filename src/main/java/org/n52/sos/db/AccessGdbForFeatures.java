@@ -15,14 +15,17 @@
  */
 package org.n52.sos.db;
 
+import java.io.IOException;
 import java.util.Collection;
 
 import org.n52.om.sampling.Feature;
+import org.n52.ows.InvalidParameterValueException;
+import org.n52.ows.ResponseExceedsSizeLimitException;
 
 public interface AccessGdbForFeatures {
 
 	Collection<Feature> getFeaturesOfInterest(String[] featuresOfInterest,
 			String[] observedProperties, String[] procedures,
-			String spatialFilter) throws Exception;
+			String spatialFilter) throws IOException, InvalidParameterValueException, ResponseExceedsSizeLimitException;
 
 }

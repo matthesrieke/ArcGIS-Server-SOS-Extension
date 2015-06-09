@@ -23,8 +23,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Scanner;
@@ -33,20 +33,30 @@ import org.n52.sos.db.AccessGDB;
 import org.n52.util.CommonUtilities;
 import org.n52.util.logging.Logger;
 
-public abstract class AbstractEntityCache<T> {
+public abstract class AbstractEntityCache<T extends CacheEntity> {
 	
 	public Logger LOGGER = Logger.getLogger(AbstractEntityCache.class.getName());
 	
 	private File cacheFile;
-	private FileOutputStream fileStream;
 	private Object cacheFileMutex = new Object();
+
+	private long lastUpdateDuration;
+
+	private int maximumEntries;
+
+	private int latestEntryIndex;
+
+	private String dbName;
 	
-	public AbstractEntityCache() throws FileNotFoundException {
+	
+	
+	public AbstractEntityCache(String dbName) throws FileNotFoundException {
+		this.dbName = dbName;
 		initializeCacheFile();
 	}
 
 	protected void initializeCacheFile() throws FileNotFoundException {
-		File baseDir = CommonUtilities.resolveCacheBaseDir();
+		File baseDir = CommonUtilities.resolveCacheBaseDir(dbName);
 		
 		synchronized (cacheFileMutex) {
 			this.cacheFile = new File(baseDir, getCacheFileName());
@@ -69,11 +79,49 @@ public abstract class AbstractEntityCache<T> {
 
 	protected abstract String serializeEntity(T entity) throws CacheException;
 
-	protected abstract Map<String, T> deserializeEntityCollection(FileInputStream fis);
-	
 	protected abstract T deserializeEntity(String line);
 	
-	public abstract void updateCache(AccessGDB geoDB) throws CacheException, IOException;
+	protected abstract Collection<T> getCollectionFromDAO(AccessGDB geoDB) throws IOException;
+	
+	protected abstract AbstractEntityCache<T> getSingleInstance();
+	
+	public void storeTemporaryEntity(T et) {
+		FileOutputStream fs = null;
+		synchronized (cacheFileMutex) {
+			try {
+				fs = new FileOutputStream(getTempCacheFile(), true);
+				storeEntity(et.getItemId(), et, fs);	
+			} catch (FileNotFoundException | CacheException e) {
+				LOGGER.warn(e.getMessage(), e);
+			} finally {
+				try {
+					if (fs != null) {
+						fs.close();
+					}
+				} catch (IOException e) {
+					LOGGER.warn(e.getMessage(), e);
+				}
+			}
+		}
+	}
+	
+	protected void clearTempCacheFile() throws IOException {
+		synchronized (cacheFileMutex) {
+			File f = getTempCacheFile();
+			f.delete();
+			f.createNewFile();
+		}
+	}
+	
+
+	protected void setMaximumEntries(int c) {
+		this.maximumEntries = c;
+	}
+	
+
+	protected void setLatestEntryIndex(int currentOfferingIndex) {
+		this.latestEntryIndex = currentOfferingIndex;
+	}
 	
 	public synchronized void storeEntity(String id, T entity, FileOutputStream fos) throws CacheException {
 		StringBuilder sb = new StringBuilder();
@@ -92,81 +140,130 @@ public abstract class AbstractEntityCache<T> {
 		
 	}
 	
+	protected Map<String, T> deserializeEntityCollection(
+			InputStream fis) {
+		Map<String, T> result = new HashMap<>();
+		Scanner sc = new Scanner(fis);
+		
+		String line;
+		while (sc.hasNext()) {
+			line = sc.nextLine();
+			String id = line.substring(0, line.indexOf("="));
+			result.put(id, deserializeEntity(line.substring(line.indexOf("=")+1, line.length())));
+		}
+		
+		sc.close();
+		
+		return result;
+	}
+	
 	public synchronized void storeEntityCollection(Collection<T> entities) throws CacheException {
-		int c = 0;
 		
 		Map<String, T> result = new HashMap<>();
 		
 		for (T t : entities) {
-			result.put(Integer.toString(c++), t);
+			result.put(t.getItemId(), t);
 		}
 		
 		storeEntityCollection(result);
 	}
 	
 	public synchronized void storeEntityCollection(Map<String, T> entities) throws CacheException {
-		File tempCacheFile;
-		try {
-			tempCacheFile = getTempCacheFile();
-			this.fileStream = new FileOutputStream(tempCacheFile);
-		} catch (FileNotFoundException e) {
-			throw new CacheException(e);
-		}
+		File tempCacheFile = getTempCacheFile();
 		
-		
-		LOGGER.info("storing cache to temporary file "+ tempCacheFile.getAbsolutePath());
-		for (String id : entities.keySet()) {
-			storeEntity(id, entities.get(id), this.fileStream);
-		}
-		
-		try {
-			this.fileStream.close();
-		} catch (IOException e) {
-			throw new CacheException(e);
-		}
-		this.fileStream = null;
-		
-		synchronized (cacheFileMutex) {
+		if (entities.isEmpty()) {
+			LOGGER.info("reloading entities from cache file");
 			try {
-				LOGGER.info("replacing target cache file "+ cacheFile.getAbsolutePath());
-				Files.copy(tempCacheFile.toPath(), this.cacheFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-				tempCacheFile.delete();
+				entities = deserializeEntityCollection(new FileInputStream(tempCacheFile));
+			} catch (FileNotFoundException e) {
+				LOGGER.warn("could not access the temp cache file contents", e);
+			}
+		}
+		
+		if (mergeWithPreviousEntries()) {
+			mergePreviousEntries(entities, cacheFile);
+		}
+		
+		if (entities.size() > 0) {
+		
+			FileOutputStream fileStream;
+			try {
+				fileStream = new FileOutputStream(tempCacheFile);
+			} catch (FileNotFoundException e) {
+				throw new CacheException(e);
+			}
+			
+			
+			LOGGER.info("storing cache to temporary file "+ tempCacheFile.getAbsolutePath());
+			for (String id : entities.keySet()) {
+				storeEntity(id, entities.get(id), fileStream);
+			}
+			
+			try {
+				fileStream.close();
 			} catch (IOException e) {
 				throw new CacheException(e);
 			}
+			fileStream = null;
+			
+			synchronized (cacheFileMutex) {
+				try {
+					LOGGER.info("replacing target cache file "+ cacheFile.getAbsolutePath());
+					Files.copy(tempCacheFile.toPath(), this.cacheFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+					tempCacheFile.delete();
+				} catch (IOException e) {
+					throw new CacheException(e);
+				}
+			}
+		}
+		
+	}
+	
+	private void mergePreviousEntries(Map<String, T> entities,
+			File fileToMerge) {
+		try {
+			Map<String, T> oldEntries = deserializeEntityCollection(new FileInputStream(fileToMerge));
+			
+			for (String key : oldEntries.keySet()) {
+				if (!entities.containsKey(key)) {
+					entities.put(key, oldEntries.get(key));
+				}
+			}
+			
+		} catch (FileNotFoundException e) {
+			LOGGER.warn("Could not read previous cache file", e);
 		}
 	}
-	
-	private File getTempCacheFile() {
-		return new File(this.cacheFile.getParent(), getCacheFileName()+".tmp");
+
+	protected boolean mergeWithPreviousEntries() {
+		return false;
 	}
 
-	public T getEntity(String id) throws CacheException {
-		return getEntityCollection().get(id);
+	private File getTempCacheFile() {
+		synchronized (cacheFileMutex) {
+			return new File(this.cacheFile.getParent(), getCacheFileName()+".tmp");
+		}
 	}
-	
-	public Map<String, T> getEntityCollection() throws CacheException {
-		return getEntityCollection(null);
-	}
-	
-	public Map<String, T> getEntityCollection(AccessGDB geoDB) throws CacheException {
+
+	public Map<String, T> getEntityCollection(AccessGDB geoDB) throws CacheException, CacheNotYetAvailableException {
+		LOGGER.info("getEntityCollection for cache "+getClass().getSimpleName());
 		synchronized (cacheFileMutex) {
 			if (this.cacheFile == null || !(this.isCacheAvailable() && this.hasCacheContent())) {
 				if (geoDB != null) {
 					try {
 						initializeCacheFile();
-						updateCache(geoDB);
+						scheduleCacheUpdate();
 					} catch (IOException e) {
 						throw new CacheException(e);
 					}
 				}
 				else {
-					LOGGER.warn("Could not access or create the cache file: "+getCacheFileName());
-					return Collections.emptyMap();
+					throw new CacheException("Could not access or create the cache file. AccessGDB not available! "+getCacheFileName());
 				}
 			}
 			
 			try {
+				LOGGER.info("Returning data from cache file...");
 				return deserializeCacheFile();
 			} catch (IOException e) {
 				throw new CacheException(e);
@@ -174,10 +271,25 @@ public abstract class AbstractEntityCache<T> {
 		}
 	}
 
-	private Map<String, T> deserializeCacheFile() throws IOException {
-		FileInputStream fis = new FileInputStream(this.cacheFile);
-		
-		return deserializeEntityCollection(fis);
+	private void scheduleCacheUpdate() {
+		AbstractCacheScheduler.Instance.instance().forceUpdate();
+	}
+
+	private Map<String, T> deserializeCacheFile() throws IOException, CacheNotYetAvailableException {
+		synchronized (cacheFileMutex) {
+			FileInputStream fis;
+			if (hasCacheContent()) {
+				fis = new FileInputStream(this.cacheFile);
+			}
+			else if (hasCacheContent(getTempCacheFile())) {
+				fis = new FileInputStream(getTempCacheFile());
+			}
+			else {
+				throw new CacheNotYetAvailableException();
+			}
+			
+			return deserializeEntityCollection(fis);
+		}
 	}
 	
 	protected String readStreamContent(InputStream is) {
@@ -209,43 +321,61 @@ public abstract class AbstractEntityCache<T> {
 	}
 	
 	public boolean hasCacheContent() {
+		return hasCacheContent(cacheFile);
+	}
+	
+	private boolean hasCacheContent(File f) {
 		synchronized (cacheFileMutex) {
-			return cacheFile.exists() && cacheFile.length() > 0;
+			return f.exists() && f.length() > 0;
 		}
 	}
 	
 	public long lastUpdated() {
-		if (isCacheAvailable() && hasCacheContent()) {
-			return cacheFile.lastModified();
+		synchronized (cacheFileMutex) {
+			if (isCacheAvailable() && hasCacheContent()) {
+				return cacheFile.lastModified();
+			}	
 		}
 		return 0;
 	}
 	
-	public boolean requestUpdateLock() {
-		File f = getCacheLockFile();
-		
-		if (f != null && f.exists()) {
-			return false;
-		}
-		
-		try {
-			f.createNewFile();
-			return true;
-		} catch (IOException e) {
-			LOGGER.warn(e.getMessage(), e);
-			LOGGER.warn("Could not access cache lock file.");
-		}
-		
-		return false;
+	public long getLastUpdateDuration() {
+		return lastUpdateDuration;
 	}
 	
-	public void freeUpdateLock() {
-		File f = getCacheLockFile();
-		
-		if (f != null && f.exists()) {
-			f.delete();
-		}
+	public int getMaximumEntries() {
+		return maximumEntries;
 	}
+	
+	public int getLatestEntryIndex() {
+		return latestEntryIndex;
+	}
+
+//	public boolean requestUpdateLock() {
+//		File f = getCacheLockFile();
+//		
+//		if (f != null && f.exists()) {
+//			return false;
+//		}
+//		
+//		try {
+//			f.createNewFile();
+//			return true;
+//		} catch (IOException e) {
+//			LOGGER.warn(e.getMessage(), e);
+//			LOGGER.warn("Could not access cache lock file.");
+//		}
+//		
+//		return false;
+//	}
+//	
+//	public void freeUpdateLock() throws FileNotFoundException {
+//		File f = getCacheLockFile();
+//		
+//		if (f != null && f.exists()) {
+//			f.delete();
+//		}
+//	}
 	
 	public boolean isUpdateOngoing() {
 		File f = getCacheLockFile();
@@ -258,6 +388,48 @@ public abstract class AbstractEntityCache<T> {
 	}
 
 	private File getCacheLockFile() {
-		return new File(this.cacheFile.getParent(), this.cacheFile.getName()+".lock");
+		synchronized (cacheFileMutex) {
+			return new File(this.cacheFile.getParent(), this.cacheFile.getName()+".lock");
+		}
 	}
+	
+	public void updateCache(AccessGDB geoDB) throws CacheException, IOException {
+		AbstractEntityCache<T> instance = getSingleInstance();
+		
+		LOGGER.info("Getting DAO data for "+ this.getClass().getSimpleName());
+		long start = System.currentTimeMillis();
+		
+		try {
+			Collection<T> entities = getCollectionFromDAO(geoDB);
+			instance.storeEntityCollection(entities);
+		}
+		catch (IOException e) {
+			LOGGER.warn("Cache instance update error: ", e);
+			instance.storeEntityCollection(new ArrayList<T>(0));
+		}
+		
+		this.lastUpdateDuration = System.currentTimeMillis() - start;
+		LOGGER.info("Update for "+ this.getClass().getSimpleName() +" took ms: "+this.lastUpdateDuration);
+		
+	}
+
+	public boolean requiresUpdate() {
+		if (this.isCacheAvailable()) {
+			if (this.hasCacheContent()) {
+				long lastUpdated = this.getSingleInstance().lastUpdated();
+				
+				if (System.currentTimeMillis() - lastUpdated > AbstractCacheScheduler.FIFTEEN_MINS_MS) {
+					return true;
+				}	
+			}
+			else {
+				return true;
+			}
+		}
+		
+		return false;
+	}
+
+	public abstract void cancelCurrentExecution();
+
 }

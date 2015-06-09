@@ -25,15 +25,20 @@ import java.util.List;
 import java.util.Map;
 import java.util.ServiceLoader;
 
+import org.joda.time.LocalTime;
 import org.n52.om.observation.MultiValueObservation;
 import org.n52.om.sampling.Feature;
 import org.n52.ows.ExceptionReport;
 import org.n52.ows.InvalidParameterValueException;
 import org.n52.ows.InvalidRequestException;
 import org.n52.ows.NoApplicableCodeException;
+import org.n52.ows.ResponseExceedsSizeLimitException;
 import org.n52.oxf.valueDomains.time.ITimePosition;
 import org.n52.oxf.valueDomains.time.TimeFactory;
-import org.n52.sos.cache.CacheScheduler;
+import org.n52.sos.cache.CacheException;
+import org.n52.sos.cache.CacheNotYetAvailableException;
+import org.n52.sos.cache.AbstractCacheScheduler;
+import org.n52.sos.cache.ObservationOfferingCache;
 import org.n52.sos.dataTypes.ObservationOffering;
 import org.n52.sos.dataTypes.Procedure;
 import org.n52.sos.dataTypes.ServiceDescription;
@@ -44,6 +49,7 @@ import org.n52.sos.encoder.JSONObservationEncoder;
 import org.n52.sos.handler.OGCOperationRequestHandler;
 import org.n52.sos.handler.OperationRequestHandler;
 import org.n52.util.ExceptionSupporter;
+import org.n52.util.VersionInfo;
 import org.n52.util.logging.Logger;
 
 import com.esri.arcgis.carto.IMapServer3;
@@ -105,9 +111,11 @@ implements IServerObjectExtension, IObjectConstruct, ISosTransactionalSoap, IRES
     
 	private List<OperationRequestHandler> operationHandlers;
 
-	private CacheScheduler cacheScheduler;
+	private AbstractCacheScheduler cacheScheduler;
 
 	private boolean updateCacheOnStartup;
+
+	private LocalTime cacheUpdateTime;
     
     /**
      * constructs a new server object extension
@@ -129,6 +137,7 @@ implements IServerObjectExtension, IObjectConstruct, ISosTransactionalSoap, IRES
     {
     	Logger.init(ServerUtilities.getServerLogger());
         LOGGER.info("Start initializing SOE");
+        LOGGER.info(new VersionInfo().toString());
         
         this.mapServerDataAccess = (IMapServerDataAccess) soh.getServerObject();
         
@@ -196,7 +205,19 @@ implements IServerObjectExtension, IObjectConstruct, ISosTransactionalSoap, IRES
             if (updateCache != null) {
             	this.updateCacheOnStartup = Boolean.parseBoolean(updateCache.toString());
             }
-            LOGGER.info("Update cache on startup? "+ this.updateCacheOnStartup);
+            LOGGER.info("Update cache on startup? "+ this.updateCacheOnStartup +" object: "+ updateCache);
+            
+            Object cacheUpdateTime = propertySet.getProperty("cacheUpdateTime");
+            if (cacheUpdateTime != null) {
+            	try {
+            		this.cacheUpdateTime = new LocalTime(cacheUpdateTime.toString());
+            	}
+            	catch (Exception e) {
+            		LOGGER.warn("Using fallback cache update Time - Could not parse cacheUpdateTime: "+cacheUpdateTime.toString(), e);
+            		this.cacheUpdateTime = new LocalTime("04:00:00");
+            	}
+            }
+            LOGGER.info("Cache update time: "+ this.cacheUpdateTime +" object: "+ cacheUpdateTime);
             
         } catch (Exception e) {
             LOGGER.severe("There was a problem while reading properties: \n" + e.getLocalizedMessage() + "\n" + ExceptionSupporter.createStringFromStackTrace(e));
@@ -218,7 +239,7 @@ implements IServerObjectExtension, IObjectConstruct, ISosTransactionalSoap, IRES
         /*
          * initiate the cache
          */
-		cacheScheduler = new CacheScheduler(geoDB, this.updateCacheOnStartup);				
+        cacheScheduler = AbstractCacheScheduler.Instance.init(geoDB, this.updateCacheOnStartup, this.cacheUpdateTime);
         
         LOGGER.info("Construction of SOE finished.");
     }
@@ -309,7 +330,7 @@ implements IServerObjectExtension, IObjectConstruct, ISosTransactionalSoap, IRES
     @Override
     public String getSchema() throws IOException, AutomationException
     {
-        LOGGER.verbose("getSchema() is called...");
+        LOGGER.debug("getSchema() is called...");
 
         return createSchema();
     }
@@ -358,6 +379,7 @@ implements IServerObjectExtension, IObjectConstruct, ISosTransactionalSoap, IRES
         // create a schema object for the GetFeatureOfInterest operation:
         ogcOperationArray.put(ServerUtilities.createOperation("GetFeatureOfInterest", "service, version, request, featureOfInterest, observedProperty, procedure, namespaces, spatialFilter", "json, xml", false));
 
+        ogcOperationArray.put(ServerUtilities.createOperation("GetCacheMetadata", "service, version, request", "json", false));
         
         // include all resource objects into 'resources' array:
         JSONArray resourceArray = new JSONArray();
@@ -411,7 +433,12 @@ implements IServerObjectExtension, IObjectConstruct, ISosTransactionalSoap, IRES
             String outputFormat,
             String requestProperties,
             String[] responseProperties) throws IOException, AutomationException {
-    	LOGGER.info("Starting to handle REST request...");
+    	if (this.cacheScheduler.isCurrentyLocked()) {
+    		throw new IOException("A database maintenance is currently in progress. Please come back in a few minutes");
+    	}
+    	
+    	LOGGER.debug("Starting to handle REST request...");
+    	
 //        LOGGER.info("capabilities: " + capabilities);
 //        LOGGER.info("resourceName: " + resourceName);
 //        LOGGER.info("operationName: " + operationName);
@@ -464,10 +491,11 @@ implements IServerObjectExtension, IObjectConstruct, ISosTransactionalSoap, IRES
         } catch (ExceptionReport e) {
             LOGGER.info("OWS ExceptionReport thrown: \n" + e.getLocalizedMessage() + "\n" + ExceptionSupporter.createStringFromStackTrace(e));
             return prepareExceptionResponse(e, responseProperties);
-        } catch (Exception e) {
+        } catch (IOException | RuntimeException e) {
             LOGGER.severe("Error while handle REST request: \n" + e.getLocalizedMessage() + "\n" + ExceptionSupporter.createStringFromStackTrace(e));
             return prepareExceptionResponse(new NoApplicableCodeException(e), responseProperties);
         }
+        
     }
 
     
@@ -482,11 +510,17 @@ implements IServerObjectExtension, IObjectConstruct, ISosTransactionalSoap, IRES
 		}
 	}
 
-	private OperationRequestHandler resolveHandler(String operationName) throws Exception {
+	private OperationRequestHandler resolveHandler(String operationName) throws InvalidRequestException {
     	for (OperationRequestHandler h : this.operationHandlers) {
-			if (h.canHandle(operationName)) {
-				return h;
+			try {
+				if (h.canHandle(operationName)) {
+					return h;
+				}	
 			}
+			catch (RuntimeException e) {
+				LOGGER.warn("Error while resolving handler", e);
+			}
+    		
 		}
     	
     	throw new InvalidRequestException("Operation '" + operationName + "' not supported on this resource.");
@@ -494,6 +528,9 @@ implements IServerObjectExtension, IObjectConstruct, ISosTransactionalSoap, IRES
 
 	/*************************************************************************************
      * Private, supporting & helper methods:
+	 * @throws IOException 
+	 * @throws InvalidRequestException 
+	 * @throws ResponseExceedsSizeLimitException 
      *************************************************************************************/
 
     /*
@@ -550,7 +587,7 @@ implements IServerObjectExtension, IObjectConstruct, ISosTransactionalSoap, IRES
     
     protected byte[] invokeObservationQueryOperation(JSONObject inputObject,
             String outputFormat,
-            String[] responseProperties) throws Exception
+            String[] responseProperties) throws ResponseExceedsSizeLimitException, InvalidRequestException, IOException
     {
         LOGGER.info("Start observation query.");
 
@@ -593,7 +630,7 @@ implements IServerObjectExtension, IObjectConstruct, ISosTransactionalSoap, IRES
         return json.toString().getBytes("utf-8");
     }
 
-    protected byte[] invokeFeatureQueryOperation(JSONObject inputObject) throws Exception
+    protected byte[] invokeFeatureQueryOperation(JSONObject inputObject) throws ExceptionReport, IOException
     {
         LOGGER.info("Start feature query.");
 
@@ -621,7 +658,7 @@ implements IServerObjectExtension, IObjectConstruct, ISosTransactionalSoap, IRES
         return json.toString().getBytes("utf-8");
     }
 
-    protected byte[] invokeProcedureQueryOperation(JSONObject inputObject) throws Exception
+    protected byte[] invokeProcedureQueryOperation(JSONObject inputObject) throws IOException
     {
         LOGGER.info("Start procedures query.");
 
@@ -653,9 +690,10 @@ implements IServerObjectExtension, IObjectConstruct, ISosTransactionalSoap, IRES
      *            addressed. E.g.: "procedures/mysensor123".
      * 
      * @return JSON representation of specified resource as a byte[].
+     * @throws IOException 
      */
     public byte[] getResource(String resourceName,
-            String operationInput) throws Exception
+            String operationInput) throws IOException, ExceptionReport
     {
         // TODO consider operationInput
 
@@ -676,7 +714,12 @@ implements IServerObjectExtension, IObjectConstruct, ISosTransactionalSoap, IRES
         }
 
         else if (resourceName.matches("observations")) {
-            Collection<ObservationOffering> offerings = geoDB.getOfferingAccess().getNetworksAsObservationOfferings();
+            Collection<ObservationOffering> offerings;
+			try {
+				offerings = ObservationOfferingCache.instance(this.geoDB.getDatabaseName()).getEntityCollection(geoDB).values();
+			} catch (CacheException | CacheNotYetAvailableException e) {
+				throw new NoApplicableCodeException(e);
+			}
             json = JSONEncoder.encodeObservationOfferings(offerings);
         }
 

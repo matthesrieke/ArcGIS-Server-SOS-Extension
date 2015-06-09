@@ -22,8 +22,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.n52.ows.ExceptionReport;
 import org.n52.ows.InvalidParameterValueException;
 import org.n52.ows.MissingParameterValueException;
+import org.n52.ows.NoApplicableCodeException;
 import org.n52.sos.Constants;
 import org.n52.sos.dataTypes.Procedure;
 import org.n52.sos.db.AccessGDB;
@@ -52,7 +54,7 @@ public class DescribeSensorOperationHandler extends OGCOperationRequestHandler {
      * <code>service, version, request, procedure, procedureDescriptionFormat</code>
      */
     public byte[] invokeOGCOperation(AccessGDB geoDB, JSONObject inputObject,
-            String[] responseProperties) throws Exception
+            String[] responseProperties) throws ExceptionReport
     {
         super.invokeOGCOperation(geoDB, inputObject, responseProperties);
         
@@ -77,7 +79,11 @@ public class DescribeSensorOperationHandler extends OGCOperationRequestHandler {
                 //return encodeProcedures(geoDB, inputObject, PROCEDURE_DESC_FORMAT_20);
             }
             else if (procedureDescriptionFormat[0].equalsIgnoreCase(Constants.RESPONSE_FORMAT_SENSORML_101)) {
-                return queryAndEncodeProcedures(geoDB, inputObject, Constants.RESPONSE_FORMAT_SENSORML_101);
+                try {
+					return queryAndEncodeProcedures(geoDB, inputObject, Constants.RESPONSE_FORMAT_SENSORML_101);
+				} catch (IOException e) {
+					throw new NoApplicableCodeException(e);
+				}
             }
             else {
                 throw invalidParamExc;
@@ -93,8 +99,9 @@ public class DescribeSensorOperationHandler extends OGCOperationRequestHandler {
      * @throws IOException 
      * @throws AutomationException 
      * @throws InvalidParameterValueException 
+     * @throws NoApplicableCodeException 
      */
-    private byte[] queryAndEncodeProcedures(AccessGDB geoDB, JSONObject inputObject, String sensorMLVersion) throws AutomationException, IOException, InvalidParameterValueException {
+    private byte[] queryAndEncodeProcedures(AccessGDB geoDB, JSONObject inputObject, String sensorMLVersion) throws AutomationException, IOException, InvalidParameterValueException, NoApplicableCodeException {
         
     	String[] procedures = null;
     	if (inputObject.has("procedure")) {

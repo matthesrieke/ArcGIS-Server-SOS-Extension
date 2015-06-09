@@ -20,6 +20,7 @@ import java.io.IOException;
 import org.n52.ows.ResponseExceedsSizeLimitException;
 import org.n52.util.logging.Logger;
 
+import com.esri.arcgis.datasourcesGDB.SqlWorkspace;
 import com.esri.arcgis.geodatabase.ICursor;
 import com.esri.arcgis.geodatabase.IQueryDef;
 import com.esri.arcgis.geodatabase.IRow;
@@ -30,22 +31,24 @@ public class DatabaseUtils {
 	private static final Logger LOGGER = Logger.getLogger(DatabaseUtils.class
 			.getName());
 
-	public static void assertMaximumRecordCount(String tables,
+	public static int assertMaximumRecordCount(String tables,
 			String whereClause, AccessGDBImpl geoDB)
 			throws ResponseExceedsSizeLimitException {
 		int value = resolveRecordCount(tables, whereClause, geoDB);
 		
 		if (value > geoDB.getMaxNumberOfResults()) {
 			throw new ResponseExceedsSizeLimitException(
-					geoDB.getMaxNumberOfResults());
+					geoDB.getMaxNumberOfResults(), value);
 		}
+		
+		return value;
 	}
 	
 	public static int resolveRecordCount(String tables,
-			String whereClause, AccessGDBImpl geoDB) {
+			String whereClause, AccessGDBImpl gdb) {
 		try {
 			ICursor countCursor = evaluateQuery(tables, whereClause,
-					"count(*)", geoDB);
+					"count(*)", gdb);
 			IRow row;
 			if ((row = countCursor.nextRow()) != null) {
 				Object value = row.getValue(0);
@@ -62,23 +65,87 @@ public class DatabaseUtils {
 		return 0;
 	}
 
-	public static ICursor evaluateQuery(String tables, String whereClause,
-			String subFields, AccessGDBImpl geoDB) throws IOException,
-			AutomationException {
-		IQueryDef queryDef = geoDB.getWorkspace().createQueryDef();
+	public static synchronized ICursor evaluateQuery(String tables, String whereClause,
+			String subFields, AccessGDBImpl gdb, boolean logAtInfoLevel) throws IOException {
+		return evaluateQuery(tables, whereClause, subFields, gdb.getWorkspace(), logAtInfoLevel);
+	}
+	
+	public static synchronized ICursor evaluateQuery(String tables, String whereClause,
+			String subFields, AccessGDBImpl gdb) throws IOException {
+		return evaluateQuery(tables, whereClause, subFields, gdb.getWorkspace(), false);
+	}
+
+	public static synchronized ICursor evaluateQuery(String tables, String whereClause,
+			String subFields, WorkspaceWrapper workspace) throws IOException {
+		return evaluateQuery(tables, whereClause, subFields, workspace, false);
+	}
+	
+	public static synchronized ICursor evaluateQuery(String tables, String whereClause,
+			String subFields, WorkspaceWrapper workspace, boolean logAtInfoLevel) throws IOException {
+		
+		if (workspace.usesSqlWorkspace()) {
+			return evaluateSqlWorkspaceQuery(tables, whereClause, subFields,
+					workspace.getSqlWorkspace(),
+					logAtInfoLevel);
+		}
+		
+		IQueryDef queryDef;
+		queryDef = workspace.getWorkspace().createQueryDef();
 
 		queryDef.setSubFields(subFields);
-		LOGGER.debug("SELECT " + queryDef.getSubFields());
+		if (logAtInfoLevel) {
+			LOGGER.info("SELECT " + queryDef.getSubFields());
+		}
+		else {
+			LOGGER.debug("SELECT " + queryDef.getSubFields());
+		}
 
 		queryDef.setTables(tables);
-		LOGGER.debug("FROM " + queryDef.getTables());
+		if (logAtInfoLevel) {
+			LOGGER.info("FROM " + queryDef.getTables());
+		}
+		else {
+			LOGGER.debug("FROM " + queryDef.getTables());
+		}
 
-		queryDef.setWhereClause(whereClause);
-		LOGGER.debug("WHERE " + queryDef.getWhereClause());
-
+		if (whereClause != null && !whereClause.isEmpty()) {
+			queryDef.setWhereClause(whereClause);
+			if (logAtInfoLevel) {
+				LOGGER.info("WHERE " + queryDef.getWhereClause());
+			}
+			else {
+				LOGGER.debug("WHERE " + queryDef.getWhereClause());			
+			}
+		}
+		
 		// evaluate the database query
 		ICursor cursor = queryDef.evaluate();
 		return cursor;
+	}
+
+	private static ICursor evaluateSqlWorkspaceQuery(String tables,
+			String whereClause, String subFields, SqlWorkspace workspace,
+			boolean logAtInfoLevel) throws IOException {
+		StringBuilder sb = new StringBuilder();
+		sb.append("SELECT ");
+		sb.append(subFields);
+		
+		sb.append(" FROM ");
+		sb.append(tables);
+		
+		if (whereClause != null && !whereClause.trim().isEmpty()) {
+			sb.append(" WHERE ");
+			sb.append(whereClause);	
+		}
+		
+		if (logAtInfoLevel) {
+			LOGGER.info(sb.toString());
+		}
+		else {
+			LOGGER.debug(sb.toString());
+		}
+		
+		return workspace.openQueryCursor(sb.toString());
 	}
 
 }

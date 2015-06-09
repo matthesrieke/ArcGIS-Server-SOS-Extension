@@ -18,6 +18,7 @@ package org.n52.sos.db;
 import java.io.IOException;
 import java.util.Collection;
 
+import org.n52.sos.cache.OnOfferingRetrieved;
 import org.n52.sos.dataTypes.ObservationOffering;
 
 public interface AccessGdbForOfferings {
@@ -25,5 +26,8 @@ public interface AccessGdbForOfferings {
 	Collection<ObservationOffering> getNetworksAsObservationOfferings() throws IOException;
 
 	Collection<ObservationOffering> getProceduresAsObservationOfferings() throws IOException;
+
+	void getNetworksAsObservationOfferingsAsync(OnOfferingRetrieved retriever)
+			throws IOException;
 
 }
